@@ -82,8 +82,12 @@ class DevLog {
     final sink = onLog;
     if (sink != null) {
       sink(text, name);
-      if (error != null) sink(_wrap(LogColor.red, error), '$name/ERR');
-      if (stackTrace != null) sink(_wrap(LogColor.grey, stackTrace), '$name/STK');
+      if (error != null) {
+        sink(_wrap(LogColor.red, error), '$name/ERR');
+      }
+      if (stackTrace != null) {
+        sink(_wrap(LogColor.grey, stackTrace), '$name/STK');
+      }
     } else {
       developer.log(text, name: name, error: error, stackTrace: stackTrace);
     }
