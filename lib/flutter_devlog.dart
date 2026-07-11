@@ -1,5 +1,5 @@
-/// A lightweight, zero-dependency, extensible colored console logger for
-/// Dart and Flutter.
+/// A lightweight, extensible colored console logger for Flutter with no
+/// dependencies beyond the Flutter SDK.
 ///
 /// ```dart
 /// import 'package:flutter_devlog/flutter_devlog.dart';
@@ -22,5 +22,6 @@ library flutter_devlog;
 
 export 'src/log_color.dart';
 export 'src/log_level.dart';
+export 'src/log_record.dart';
 export 'src/dev_log.dart';
 export 'src/scoped_logger.dart';

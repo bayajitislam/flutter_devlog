@@ -3,11 +3,11 @@ import 'dart:developer' as developer;
 
 import 'package:flutter/foundation.dart';
 
-import 'log_color.dart';
 import 'log_level.dart';
+import 'log_record.dart';
 import 'scoped_logger.dart';
 
-/// A static, easy-to-use colored logger for Dart and Flutter.
+/// A static, easy-to-use colored logger for Flutter.
 ///
 /// Quick start:
 ///
@@ -20,16 +20,25 @@ import 'scoped_logger.dart';
 /// Configure once (usually in `main`):
 ///
 /// ```dart
-/// DevLog.enabled = true;                 // defaults to debug mode only
-/// DevLog.useColors = false;              // strip ANSI on plain consoles
-/// DevLog.includeSource = true;           // prepend file:line
-/// DevLog.minPriority = LogPriority.info; // drop ui/storage logs
-/// DevLog.onLog = (msg, name) => myFile.writeln('[$name] $msg');
+/// DevLog.configure(
+///   enabled: true,                 // defaults to debug mode only
+///   useColors: false,              // strip ANSI on plain consoles
+///   includeSource: true,           // prepend file:line
+///   showTimestamps: true,          // prepend HH:mm:ss.SSS
+///   minPriority: LogPriority.info, // drop ui/storage logs
+///   onLog: (record) => myFile.writeln(record.formatted),
+/// );
 /// ```
 class DevLog {
   DevLog._();
 
   /// Master switch. Defaults to active only in debug builds ([kDebugMode]).
+  ///
+  /// This is a development-only logger: release builds ([kReleaseMode]) are
+  /// **always silent**, even when this is set to `true`. Because the release
+  /// check is a compile-time constant, the logging code is tree-shaken out of
+  /// release builds entirely. Setting `enabled = true` only affects debug and
+  /// profile builds.
   static bool enabled = kDebugMode;
 
   /// When `false`, ANSI color codes are stripped from output. Set this on
@@ -41,55 +50,124 @@ class DevLog {
   /// source location parses a [StackTrace], which has a small cost.
   static bool includeSource = false;
 
+  /// When `true`, each message is prefixed with an `HH:mm:ss.SSS` timestamp,
+  /// e.g. `[14:03:07.412] App started`. Off by default.
+  static bool showTimestamps = false;
+
   /// Logs whose level priority is below this are dropped before any work is
   /// done. Defaults to the lowest priority (nothing filtered).
   static LogPriority minPriority = LogPriority.ui;
 
-  /// Optional output sink. When set, it receives `(message, name)` instead of
-  /// the default `dart:developer` log — useful for files, crash reporters, or
-  /// capturing output in tests. Set back to `null` to restore default output.
-  static void Function(String message, String name)? onLog;
+  /// When set, only tagged logs whose tag is in this set are emitted.
+  /// Untagged logs always pass. Leave `null` (the default) to allow all tags.
+  ///
+  /// ```dart
+  /// DevLog.allowedTags = {'Auth', 'Payment'}; // silence everything else
+  /// ```
+  static Set<String>? allowedTags;
+
+  /// Tags in this set are always dropped, even when listed in [allowedTags].
+  /// Useful when one chatty module drowns out the console.
+  ///
+  /// ```dart
+  /// DevLog.blockedTags = {'Bloc'}; // hide a noisy module
+  /// ```
+  static Set<String> blockedTags = {};
+
+  /// Optional output sink. When set, it receives a structured [LogRecord]
+  /// instead of the default `dart:developer` log — useful for files, crash
+  /// reporters, or capturing output in tests. The record's `message` carries
+  /// no ANSI codes; call `record.formatted` for the colored console string.
+  /// Set back to `null` to restore default output.
+  static void Function(LogRecord record)? onLog;
+
+  /// Sets several options in one call. Only the parameters you pass are
+  /// changed; the rest keep their current values.
+  ///
+  /// ```dart
+  /// DevLog.configure(
+  ///   includeSource: true,
+  ///   minPriority: LogPriority.info,
+  /// );
+  /// ```
+  static void configure({
+    bool? enabled,
+    bool? useColors,
+    bool? includeSource,
+    bool? showTimestamps,
+    LogPriority? minPriority,
+    Set<String>? allowedTags,
+    Set<String>? blockedTags,
+    void Function(LogRecord record)? onLog,
+  }) {
+    if (enabled != null) DevLog.enabled = enabled;
+    if (useColors != null) DevLog.useColors = useColors;
+    if (includeSource != null) DevLog.includeSource = includeSource;
+    if (showTimestamps != null) DevLog.showTimestamps = showTimestamps;
+    if (minPriority != null) DevLog.minPriority = minPriority;
+    if (allowedTags != null) DevLog.allowedTags = allowedTags;
+    if (blockedTags != null) DevLog.blockedTags = blockedTags;
+    if (onLog != null) DevLog.onLog = onLog;
+  }
+
+  /// Restores every option to its default value, including [onLog]. Handy as
+  /// a one-liner in test `tearDown` blocks.
+  static void reset() {
+    enabled = kDebugMode;
+    useColors = true;
+    includeSource = false;
+    showTimestamps = false;
+    minPriority = LogPriority.ui;
+    allowedTags = null;
+    blockedTags = {};
+    onLog = null;
+  }
 
   // ----- internal helpers -----
 
-  static bool _shouldLog(LogLevel level) =>
-      enabled && level.priority.index >= minPriority.index;
+  static bool _shouldLog(LogLevel level, String? tag) {
+    // kReleaseMode is a compile-time constant, so in release builds this
+    // whole method folds to `false` and log calls are tree-shaken away.
+    if (kReleaseMode) return false;
+    if (!enabled || level.priority.index < minPriority.index) return false;
+    if (tag != null) {
+      if (blockedTags.contains(tag)) return false;
+      final allowed = allowedTags;
+      if (allowed != null && !allowed.contains(tag)) return false;
+    }
+    return true;
+  }
 
-  static String _wrap(String color, Object? message) =>
-      useColors ? '$color$message${LogColor.reset}' : '$message';
-
-  /// Resolves the caller's `file:line` from the current stack trace.
-  /// [skip] is how many frames to skip to reach the user's call site.
-  static String _source(int skip) {
+  /// Resolves the caller's `file:line` by scanning the current stack trace
+  /// for the first frame outside this package. This stays correct no matter
+  /// how many wrapper calls (shortcuts, [lazy], [ScopedLogger]) sit between
+  /// the user's code and the logger.
+  static String? _source() {
     final frames = StackTrace.current.toString().split('\n');
-    if (frames.length > skip) {
+    for (final frame in frames) {
+      if (frame.contains('package:flutter_devlog/')) continue;
       final match =
-          RegExp(r'\(?([^\s(]+\.dart):(\d+)(?::\d+)?\)?').firstMatch(frames[skip]);
+          RegExp(r'\(?([^\s(]+\.dart):(\d+)(?::\d+)?\)?').firstMatch(frame);
       if (match != null) {
         final file = match.group(1)!.split('/').last;
         return '$file:${match.group(2)}';
       }
     }
-    return '';
+    return null;
   }
 
-  static void _emit(
-    String text,
-    String name, {
-    Object? error,
-    StackTrace? stackTrace,
-  }) {
+  static void _emit(LogRecord record) {
     final sink = onLog;
     if (sink != null) {
-      sink(text, name);
-      if (error != null) {
-        sink(_wrap(LogColor.red, error), '$name/ERR');
-      }
-      if (stackTrace != null) {
-        sink(_wrap(LogColor.grey, stackTrace), '$name/STK');
-      }
+      sink(record);
     } else {
-      developer.log(text, name: name, error: error, stackTrace: stackTrace);
+      developer.log(
+        record.format(colors: useColors, timestamp: showTimestamps),
+        name: record.name,
+        time: record.time,
+        error: record.error,
+        stackTrace: record.stackTrace,
+      );
     }
   }
 
@@ -103,35 +181,48 @@ class DevLog {
     String? tag,
     Object? error,
     StackTrace? stackTrace,
-    int sourceSkip = 4,
   }) {
-    if (!_shouldLog(level)) return;
-    final src = includeSource ? _source(sourceSkip) : '';
-    final body = src.isEmpty ? '$message' : '[$src] $message';
-    final name = tag == null ? level.name : '${level.name}/$tag';
-    _emit(_wrap(level.color, body), name, error: error, stackTrace: stackTrace);
+    if (!_shouldLog(level, tag)) return;
+    _emit(LogRecord(
+      level: level,
+      message: '$message',
+      name: tag == null ? level.name : '${level.name}/$tag',
+      tag: tag,
+      error: error,
+      stackTrace: stackTrace,
+      time: DateTime.now(),
+      source: includeSource ? _source() : null,
+    ));
   }
 
   // ----- convenience shortcuts for built-in levels -----
 
+  /// Logs [m] at [LogLevel.ui] — screen and widget events.
   static void ui(Object? m, {String? tag}) =>
       log(m, level: LogLevel.ui, tag: tag);
 
+  /// Logs [m] at [LogLevel.storage] — local storage, cache, and database.
   static void storage(Object? m, {String? tag}) =>
       log(m, level: LogLevel.storage, tag: tag);
 
+  /// Logs [m] at [LogLevel.info] — general informational messages.
   static void info(Object? m, {String? tag}) =>
       log(m, level: LogLevel.info, tag: tag);
 
+  /// Logs [m] at [LogLevel.success] — operations that completed well.
   static void success(Object? m, {String? tag}) =>
       log(m, level: LogLevel.success, tag: tag);
 
+  /// Logs [m] at [LogLevel.api] — network and API events.
   static void api(Object? m, {String? tag}) =>
       log(m, level: LogLevel.api, tag: tag);
 
+  /// Logs [m] at [LogLevel.warn] — needs attention but is not a failure.
   static void warn(Object? m, {String? tag}) =>
       log(m, level: LogLevel.warn, tag: tag);
 
+  /// Logs [m] at [LogLevel.error], optionally with the caught [error] object
+  /// and [stackTrace] so DevTools and crash reporters can pick them up.
   static void error(
     Object? m, {
     String? tag,
@@ -157,31 +248,42 @@ class DevLog {
     required LogLevel level,
     String? tag,
   }) {
-    if (!_shouldLog(level)) return;
-    log(builder(), level: level, tag: tag, sourceSkip: 5);
+    if (!_shouldLog(level, tag)) return;
+    log(builder(), level: level, tag: tag);
   }
 
   // ----- pretty JSON -----
 
   /// Pretty-prints any JSON-encodable [data] with 2-space indentation.
   ///
-  /// An optional [title] is printed first (white); [label] sets the channel
-  /// name. Data that cannot be encoded is reported on a `JSON ERROR` channel.
+  /// An optional [title] is printed on the line above the JSON; [label] sets
+  /// the channel name. The log is filtered like any other via [level], which
+  /// defaults to [LogLevel.json] (priority [LogPriority.info]). Data that
+  /// cannot be encoded is reported on a `JSON ERROR` channel instead.
   static void json(
     Object? data, {
     String title = '',
     String label = 'JSON',
+    LogLevel level = LogLevel.json,
   }) {
-    if (!enabled) return;
+    if (!_shouldLog(level, null)) return;
     try {
       const encoder = JsonEncoder.withIndent('  ');
       final pretty = encoder.convert(data);
-      if (title.isNotEmpty) {
-        _emit(_wrap(LogColor.white, title), label);
-      }
-      _emit(_wrap(LogColor.cyan, pretty), label);
+      _emit(LogRecord(
+        level: level,
+        message: title.isEmpty ? pretty : '$title\n$pretty',
+        name: label,
+        time: DateTime.now(),
+        source: includeSource ? _source() : null,
+      ));
     } catch (e) {
-      _emit(_wrap(LogColor.red, e), 'JSON ERROR');
+      _emit(LogRecord(
+        level: LogLevel.error,
+        message: '$e',
+        name: 'JSON ERROR',
+        time: DateTime.now(),
+      ));
     }
   }
 

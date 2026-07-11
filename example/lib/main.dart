@@ -9,10 +9,13 @@ final authLog = DevLog.scoped('Auth');
 
 void main() {
   // Configure once at startup.
-  DevLog.enabled = true; // by default only true in debug builds
-  DevLog.useColors = true; // set false if your console shows raw \x1B codes
-  DevLog.includeSource = true; // prepend [file:line] to every message
-  DevLog.minPriority = LogPriority.ui; // log everything
+  DevLog.configure(
+    enabled: true, // by default only true in debug builds
+    useColors: true, // set false if your console shows raw \x1B codes
+    includeSource: true, // prepend [file:line] to every message
+    showTimestamps: true, // prepend [HH:mm:ss.SSS] to every message
+    minPriority: LogPriority.ui, // log everything
+  );
 
   // Basic leveled logging.
   DevLog.ui('HomeScreen built');
@@ -35,6 +38,10 @@ void main() {
   // Scoped logger — auto-tags as INFO/Auth, SUCCESS/Auth, etc.
   authLog.info('Verifying credentials');
   authLog.success('Logged in');
+
+  // Nested scope — tags as INFO/Auth/Login.
+  final loginLog = authLog.child('Login');
+  loginLog.info('OTP sent');
 
   // Custom level.
   DevLog.log('Opening socket...', level: networkLevel);
