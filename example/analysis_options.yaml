@@ -1,0 +1,3 @@
+# The example app doesn't need dartdoc on every public member,
+# unlike the package's lib/ code.
+include: package:flutter_lints/flutter.yaml

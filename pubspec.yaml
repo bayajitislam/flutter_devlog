@@ -1,6 +1,6 @@
 name: flutter_devlog
-description: A lightweight, zero-dependency, extensible colored console logger for Dart and Flutter with source location, JSON, levels, tags and scopes.
-version: 0.1.0
+description: A lightweight, extensible colored console logger for Flutter with structured log records, source location, JSON, levels, tags and scopes.
+version: 0.2.0
 homepage: https://github.com/bayajitislam/flutter_devlog
 repository: https://github.com/bayajitislam/flutter_devlog
 issue_tracker: https://github.com/bayajitislam/flutter_devlog/issues

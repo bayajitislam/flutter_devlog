@@ -9,10 +9,11 @@
 
 A small, colored console logger for Dart and Flutter.
 
-It has no dependencies, only prints in debug mode by default, and keeps a simple
-API: one class, `DevLog`, with a method for each log level. When your app grows,
-you can add tags, scopes, custom levels, and filtering without changing how you
-call it.
+It has no dependencies beyond the Flutter SDK, is guaranteed silent in release
+builds (the logging code is compiled out of your production app), and keeps a
+simple API: one class, `DevLog`, with a method for each log level. When your
+app grows, you can add tags, scopes, custom levels, and filtering without
+changing how you call it.
 
 **If this package helps you, please star the repo to support it.**
 
@@ -28,7 +29,7 @@ Add it to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flutter_devlog: ^0.1.0
+  flutter_devlog: ^0.2.0
 ```
 
 Then run `flutter pub get`, and import it where you need it:
@@ -36,6 +37,11 @@ Then run `flutter pub get`, and import it where you need it:
 ```dart
 import 'package:flutter_devlog/flutter_devlog.dart';
 ```
+
+It goes under `dependencies` (not `dev_dependencies`) because your app code
+imports it — Dart only allows dev dependencies in `test/` and `tool/`. That is
+safe: this is a development-only logger, and release builds are always silent
+(see below), so it adds nothing to your production app.
 
 ## A quick example
 
@@ -102,27 +108,41 @@ DevLog.json(response, title: 'User response');
 ```
 
 This prints the title first, then the JSON neatly indented. If the object can't
-be turned into JSON, it tells you instead of crashing.
+be turned into JSON, it tells you instead of crashing. JSON logs are filtered
+like `info`-level logs; pass a different `level` if you want another priority.
 
 ## Turning logging on and off
 
-By default, logs only appear in debug builds and are silent in release builds,
-so you don't have to remove your log lines before shipping.
+By default, logs only appear in debug builds, so you don't have to remove your
+log lines before shipping.
 
-You can change this and a few other things once, usually at the start of `main`:
+Release builds are **always silent** — this is a debugging tool, and there is
+deliberately no way to turn it on in production. Even `DevLog.enabled = true`
+has no effect in a release build. The release check is a compile-time constant,
+so the compiler removes the logging code from your release app entirely; your
+log lines cost nothing in production.
+
+`enabled` controls debug and profile builds. You can change it and a few other
+things once, usually at the start of `main`.
+Every option is a plain field on `DevLog`, or set several at a time with
+`configure`:
 
 ```dart
 void main() {
-  DevLog.enabled = true;        // force on/off yourself
-  DevLog.useColors = true;      // set false if you see raw codes like \x1B[31m
-  DevLog.includeSource = true;  // add the file and line, e.g. [main.dart:42]
+  DevLog.configure(
+    enabled: true,         // force on/off (debug and profile builds only)
+    useColors: true,       // set false if you see raw codes like \x1B[31m
+    includeSource: true,   // add the file and line, e.g. [main.dart:42]
+    showTimestamps: true,  // add the time, e.g. [14:03:07.412]
+  );
 
   runApp(const MyApp());
 }
 ```
 
 `includeSource` is handy while debugging because every log tells you exactly
-which line printed it.
+which line printed it. To go back to all defaults at once (useful in test
+`tearDown` blocks), call `DevLog.reset()`.
 
 ## Showing only the important logs
 
@@ -136,6 +156,17 @@ DevLog.minPriority = LogPriority.warn;
 After this, `ui`, `storage`, `info`, `success`, and `api` logs are skipped, and
 only `warn` and `error` get through. Set it back to `LogPriority.ui` to see
 everything again.
+
+You can also filter by tag. When one module floods the console, block it; or
+allow only the tags you are working on right now:
+
+```dart
+DevLog.blockedTags = {'Bloc'};            // hide a noisy module
+DevLog.allowedTags = {'Auth', 'Payment'}; // show only these tags
+```
+
+Untagged logs always pass the allowlist. Set `blockedTags = {}` and
+`allowedTags = null` to remove the filters.
 
 ## Tagging logs by feature
 
@@ -162,7 +193,15 @@ log.success('Logged in');           // prints as SUCCESS/Auth
 log.error('Token expired', error: e);
 ```
 
-This keeps your code clean because you don't repeat the tag every time.
+This keeps your code clean because you don't repeat the tag every time. A
+scoped logger has the same methods as `DevLog`, including `lazy` and `json`.
+
+For sub-features, create a nested scope with `child`:
+
+```dart
+final loginLog = log.child('Login');
+loginLog.info('OTP sent');          // prints as INFO/Auth/Login
+```
 
 ## Adding your own log level
 
@@ -194,15 +233,35 @@ If `minPriority` is set above `info`, the function is never called.
 
 By default logs go to the console. If you want to write them to a file, send
 them to a crash reporter, or capture them in a test, set `onLog`. It receives
-the final message and its label:
+a `LogRecord` with everything about the log as separate fields: the level, the
+raw message (no color codes), the channel name, the tag, the error and stack
+trace, the time, and the source location.
+
+Writing to a file:
 
 ```dart
-DevLog.onLog = (message, label) {
-  myLogFile.writeln('[$label] $message');
+DevLog.onLog = (record) {
+  myLogFile.writeln('${record.time} [${record.name}] ${record.message}');
 };
 ```
 
-Set it back to `null` to return to normal console output.
+Forwarding errors to a crash reporter:
+
+```dart
+DevLog.onLog = (record) {
+  if (record.level == LogLevel.error) {
+    FirebaseCrashlytics.instance.recordError(
+      record.error ?? record.message,
+      record.stackTrace,
+      reason: record.message,
+    );
+  }
+};
+```
+
+If you just want the exact colored string the console would show, use
+`record.formatted`. Set `onLog` back to `null` to return to normal console
+output.
 
 ## A note on colors
 
